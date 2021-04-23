@@ -150,6 +150,7 @@ public class Bootstrap extends AbstractBootstrap<Bootstrap, Channel> {
 
     /**
      * @see #connect()
+     * 创建一个新的channel，来建立和服务端的连接。
      */
     private ChannelFuture doResolveAndConnect(final SocketAddress remoteAddress, final SocketAddress localAddress) {
         final ChannelFuture regFuture = initAndRegister();
@@ -255,7 +256,7 @@ public class Bootstrap extends AbstractBootstrap<Bootstrap, Channel> {
             }
         });
     }
-
+    // 交给具体的子类实现
     @Override
     void init(Channel channel) {
         ChannelPipeline p = channel.pipeline();
