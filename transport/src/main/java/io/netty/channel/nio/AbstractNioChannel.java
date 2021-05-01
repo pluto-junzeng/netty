@@ -44,6 +44,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Abstract base class for {@link Channel} implementations which use a Selector based approach.
+ * 将 Channel 与 Selector 关联起来
  */
 public abstract class AbstractNioChannel extends AbstractChannel {
 
@@ -209,6 +210,11 @@ public abstract class AbstractNioChannel extends AbstractChannel {
         void forceFlush();
     }
 
+    /**
+     * AbstractNioUnsafe是AbstractUnsafe类的NIO实现，主要实现了connect()、flush0()等方法。它还实现了NioUnsafe接口，
+     * 实现了其finishConnect()、forceFlush()、ch()等方法。
+     * 其中，forceFlush()与flush0()最终调用的NioSocketChannel的doWrite()方法来完成缓存数据写入Socket的工作，
+     */
     protected abstract class AbstractNioUnsafe extends AbstractUnsafe implements NioUnsafe {
 
         protected final void removeReadOp() {
@@ -234,34 +240,48 @@ public abstract class AbstractNioChannel extends AbstractChannel {
         @Override
         public final void connect(
                 final SocketAddress remoteAddress, final SocketAddress localAddress, final ChannelPromise promise) {
-            if (!promise.setUncancellable() || !ensureOpen(promise)) {
+            if (!promise.setUncancellable() || !ensureOpen(promise)) { // 设置任务未不可取消状态，并确定channel已经打开
                 return;
             }
 
             try {
-                if (connectPromise != null) {
+                if (connectPromise != null) { // 确保没有正在进行的连接
                     // Already a connect in process.
                     throw new ConnectionPendingException();
                 }
-
+                // 获取之前的状态
                 boolean wasActive = isActive();
+                /**
+                 * 在远处连接时，会出现以下三种结果
+                 * 连接成功
+                 * 暂时没有连接上，服务端没有返回ACK应答，连接结果不确定，返回false
+                 * 连接失败，直接抛出I/O 异常
+                 * 由于协议和IO模型的不懂，连接方式也不一致，具体实现由其子类完成。
+                 */
                 if (doConnect(remoteAddress, localAddress)) {
+                    // 连接成功后，会触发ChannelActive事件
+                    // 最终会将NioSocketChannel中的selectKey设置为SelectionKey.OP_READ
+                    // 用于监听网络读操作位
                     fulfillConnectPromise(promise, wasActive);
                 } else {
                     connectPromise = promise;
                     requestedRemoteAddress = remoteAddress;
 
                     // Schedule connect timeout.
+                    // 根据连接超时事件设定定时任务
                     int connectTimeoutMillis = config().getConnectTimeoutMillis();
                     if (connectTimeoutMillis > 0) {
                         connectTimeoutFuture = eventLoop().schedule(new Runnable() {
                             @Override
                             public void run() {
+                                // 到时间后触发校验
                                 ChannelPromise connectPromise = AbstractNioChannel.this.connectPromise;
                                 if (connectPromise != null && !connectPromise.isDone()
                                         && connectPromise.tryFailure(new ConnectTimeoutException(
                                                 "connection timed out: " + remoteAddress))) {
                                     close(voidPromise());
+                                    // 如果发现连接并没有完成，则关闭连接句柄，释放资源
+                                    // 设置异常堆栈，并发起取消注册操作
                                 }
                             }
                         }, connectTimeoutMillis, TimeUnit.MILLISECONDS);
@@ -375,19 +395,26 @@ public abstract class AbstractNioChannel extends AbstractChannel {
     @Override
     protected void doRegister() throws Exception {
         boolean selected = false;
-        for (;;) {
+        for (;;) { // for (;;) 这群人以前是写C的，c中for (;;)要比while快，哈哈
             try {
+                // 通过javaChannel方法获取具体的Nio Channel
+                // 把channel注册到其EventLoop线程的Selector上
+                // 对于注册后，返回的selectionKey，需要将其设置为channel 感兴趣的事件
                 selectionKey = javaChannel().register(eventLoop().unwrappedSelector(), 0, this);
                 return;
             } catch (CancelledKeyException e) {
                 if (!selected) {
                     // Force the Selector to select now as the "canceled" SelectionKey may still be
                     // cached and not removed because no Select.select(..) operation was called yet.
+                    // 由于尚未调用selector.select
+                    // 因此可能仍在缓存而未删除但是已经取消的selectKey，强制调用selector.selectNow方法，将已经取消的selectKey从Selector
+                    // 上删除
                     eventLoop().selectNow();
                     selected = true;
                 } else {
                     // We forced a select operation on the selector before but the SelectionKey is still cached
                     // for whatever reason. JDK bug ?
+                    // 可能依旧没办法清空缓存，JDK可能存在这个BUG....
                     throw e;
                 }
             }

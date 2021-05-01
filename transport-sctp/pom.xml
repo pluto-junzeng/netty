@@ -53,6 +53,11 @@
       <artifactId>netty-transport</artifactId>
       <version>${project.version}</version>
     </dependency>
+      <dependency>
+          <artifactId>netty-all</artifactId>
+          <groupId>io.netty</groupId>
+          <version>4.1.51.Final</version>
+      </dependency>
   </dependencies>
 
   <build>

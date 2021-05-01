@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * A {@link ThreadFactory} implementation with a simple naming rule.
+ * 默认线程工厂，负责将NioEventLoop线程包装成FastThreadLocalThread，便于NioEventLoop线程对自生状态的管理。
  */
 public class DefaultThreadFactory implements ThreadFactory {
 
@@ -102,6 +103,8 @@ public class DefaultThreadFactory implements ThreadFactory {
 
     @Override
     public Thread newThread(Runnable r) {
+        // 包装 FastThreadLocalThread,线程名字的前缀为NioEventLoopGroup
+        // 服务启动后，可以通过arthas工具查看
         Thread t = newThread(FastThreadLocalRunnable.wrap(r), prefix + nextId.incrementAndGet());
         try {
             if (t.isDaemon() != daemon) {

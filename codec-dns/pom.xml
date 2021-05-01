@@ -59,6 +59,12 @@
       <artifactId>apacheds-protocol-dns</artifactId>
       <scope>test</scope>
     </dependency>
+      <dependency>
+          <artifactId>netty-all</artifactId>
+          <groupId>io.netty</groupId>
+          <version>4.1.51.Final</version>
+          <scope>compile</scope>
+      </dependency>
   </dependencies>
 </project>
 

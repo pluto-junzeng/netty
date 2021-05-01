@@ -52,6 +52,14 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * {@link SingleThreadEventLoop} implementation which register the {@link Channel}'s to a
  * {@link Selector} and so does the multi-plexing of these in the event loop.
+ * 每个NioEventLoop对象都与NIO中的多路复用器Selector一样，要管理成千上万条链路，所有链路数据的读/写事件都由它来发起。
+ * 1、开启Selector并初始化
+ * 2、把ServerSocketChannel注册到Selector上面
+ * 3、处理各种IO事件、如OP_ACCEPT,CONNECT,READ,WRITE
+ * 4、执行定时调度任务
+ * 5、解决JDK空轮询BUG
+ *
+ * 大部分实现是委托其他类完成的，减轻其负担，同时增强其扩展性。
  *
  */
 public final class NioEventLoop extends SingleThreadEventLoop {
@@ -170,15 +178,15 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     private SelectorTuple openSelector() {
         final Selector unwrappedSelector;
         try {
-            unwrappedSelector = provider.openSelector();
+            unwrappedSelector = provider.openSelector(); // 创建Selector
         } catch (IOException e) {
             throw new ChannelException("failed to open a new selector", e);
         }
-
+        // 判断是否开启优化开关，默认没有开启，直接返回selector
         if (DISABLE_KEY_SET_OPTIMIZATION) {
             return new SelectorTuple(unwrappedSelector);
         }
-
+        // 通过反射创建SelectorImpl对象
         Object maybeSelectorImplClass = AccessController.doPrivileged(new PrivilegedAction<Object>() {
             @Override
             public Object run() {
@@ -204,7 +212,11 @@ public final class NioEventLoop extends SingleThreadEventLoop {
         }
 
         final Class<?> selectorImplClass = (Class<?>) maybeSelectorImplClass;
+        // 将JDK的sunnio.ch.SelectorImpl.selectKeys替换掉
         final SelectedSelectionKeySet selectedKeySet = new SelectedSelectionKeySet();
+        // selectedKeySet就绪key的集合，拥有所有操作事件准备就绪的选择key
+        // SelectedSelectionKeySet 优化了hashset集合，主要是数据结构改变了，用数组替代HashSet，重写了add和iterator方法，使数组的遍历
+        // 效率更高
 
         Object maybeException = AccessController.doPrivileged(new PrivilegedAction<Object>() {
             @Override
@@ -229,7 +241,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                         }
                         // We could not retrieve the offset, lets try reflection as last-resort.
                     }
-
+                    // 设置为可写
                     Throwable cause = ReflectionUtil.trySetAccessible(selectedKeysField, true);
                     if (cause != null) {
                         return cause;
@@ -238,7 +250,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                     if (cause != null) {
                         return cause;
                     }
-
+                    // 通过反射的方式吧selector的selectedKey和publicSelectedKeys使用netty构造的selectedKeys替换为JDK的selectedKeyset
                     selectedKeysField.set(unwrappedSelector, selectedKeySet);
                     publicSelectedKeysField.set(unwrappedSelector, selectedKeySet);
                     return null;
@@ -256,6 +268,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
             logger.trace("failed to instrument a special java.util.Set into: {}", unwrappedSelector, e);
             return new SelectorTuple(unwrappedSelector);
         }
+        // 把selectkeySet赋给NioEventLoop的属性，并返回selector元数据
         selectedKeys = selectedKeySet;
         logger.trace("instrumented a special java.util.Set into: {}", unwrappedSelector);
         return new SelectorTuple(unwrappedSelector,
@@ -351,7 +364,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
      * Replaces the current {@link Selector} of this event loop with newly created {@link Selector}s to work
      * around the infamous epoll 100% CPU bug.
      */
-    public void rebuildSelector() {
+    public void rebuildSelector() { // 重构selector，
         if (!inEventLoop()) {
             execute(new Runnable() {
                 @Override
@@ -447,7 +460,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                         // fall-through to SELECT since the busy-wait is not supported with NIO
 
                     case SelectStrategy.SELECT:
-                        long curDeadlineNanos = nextScheduledTaskDeadlineNanos();
+                        long curDeadlineNanos = nextScheduledTaskDeadlineNanos(); // 获取定时任务触发时间，纳秒级~
                         if (curDeadlineNanos == -1L) {
                             curDeadlineNanos = NONE; // nothing on the calendar
                         }
@@ -467,6 +480,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                 } catch (IOException e) {
                     // If we receive an IOException here its because the Selector is messed up. Let's rebuild
                     // the selector and retry. https://github.com/netty/netty/issues/8566
+                    // 并不是所有的代码都是一步到位的，这么厉害的人，都会重试，哈哈
                     rebuildSelector0();
                     selectCnt = 0;
                     handleLoopException(e);
@@ -485,7 +499,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                         }
                     } finally {
                         // Ensure we always run tasks.
-                        ranTasks = runAllTasks();
+                        ranTasks = runAllTasks(); // 主要目的是执行taskQueue队列和定时任务队列中的任务，如心跳检测、异步写操作等
                     }
                 } else if (strategy > 0) {
                     final long ioStartTime = System.nanoTime();
@@ -596,6 +610,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     void cancel(SelectionKey key) {
         key.cancel();
         cancelledKeys ++;
+        // 当移动次数大于 256次时
         if (cancelledKeys >= CLEANUP_INTERVAL) {
             cancelledKeys = 0;
             needsToSelectAgain = true;
@@ -642,12 +657,17 @@ public final class NioEventLoop extends SingleThreadEventLoop {
         }
     }
 
+    /**
+     * 主要处理第一部分轮询到的就绪Key，并取出这些SelectionKey及其附件attachment。附件有两种类型：第一种是AbstractNioChannel，
+     * 第二种是NioTask。其中，第二种附件在Netty内部未使用
+     */
     private void processSelectedKeysOptimized() {
         for (int i = 0; i < selectedKeys.size; ++i) {
             final SelectionKey k = selectedKeys.keys[i];
             // null out entry in the array to allow to have it GC'ed once the Channel close
             // See https://github.com/netty/netty/issues/2363
             selectedKeys.keys[i] = null;
+            // 将selectkeys.keys[i] 置为null，能被jvm快速回收，attachment比较大，容易造成内存泄漏
 
             final Object a = k.attachment();
 
@@ -810,7 +830,9 @@ public final class NioEventLoop extends SingleThreadEventLoop {
             return selector.select();
         }
         // Timeout will only be 0 if deadline is within 5 microsecs
+        // 获取距离定时任务触发时间的时长，
         long timeoutMillis = deadlineToDelayNanos(deadlineNanos + 995000L) / 1000000L;
+        // 之前没有执行过select ,则调用非阻塞的selectNow方法
         return timeoutMillis <= 0 ? selector.selectNow() : selector.select(timeoutMillis);
     }
 

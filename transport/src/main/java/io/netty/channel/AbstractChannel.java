@@ -39,6 +39,7 @@ import java.util.concurrent.RejectedExecutionException;
 
 /**
  * A skeletal {@link Channel} implementation.
+ * Channel 实现的框架，由于涉及到不通的网络IO模型，和协议，故没有任何网络相关的实现
  */
 public abstract class AbstractChannel extends DefaultAttributeMap implements Channel {
 
@@ -47,13 +48,14 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
     private final Channel parent;
     private final ChannelId id;
     private final Unsafe unsafe;
-    private final DefaultChannelPipeline pipeline;
+    // 实现具体的连接与读/写数据，如网络的读/写、链路关闭、发起连接等。命名为Unsafe表示不对外提供使用，并非不安全。
+    private final DefaultChannelPipeline pipeline; // 一个handler的容器，也可以将其理解为handler链，处理数据的编解码和业务逻辑
     private final VoidChannelPromise unsafeVoidPromise = new VoidChannelPromise(this, false);
     private final CloseFuture closeFuture = new CloseFuture(this);
 
     private volatile SocketAddress localAddress;
     private volatile SocketAddress remoteAddress;
-    private volatile EventLoop eventLoop;
+    private volatile EventLoop eventLoop; // 每个Channel 对应一条EventLoop线程
     private volatile boolean registered;
     private boolean closeInitiated;
     private Throwable initialCloseCause;

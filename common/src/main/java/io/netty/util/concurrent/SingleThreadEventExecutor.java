@@ -469,12 +469,15 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
         long runTasks = 0;
         long lastExecutionTime;
         for (;;) {
+            // 运行tash的run方法
             safeExecute(task);
 
             runTasks ++;
 
             // Check timeout every 64 tasks because nanoTime() is relatively expensive.
             // XXX: Hard-coded value - will make it configurable if it is really a problem.
+            // 每执行64个任务后就会检测执行任务的时间是否已用完，如果执行任务的时间用完了，就不再执行后续的任务了
+            // 比直接对 64取余速度要快
             if ((runTasks & 0x3F) == 0) {
                 lastExecutionTime = ScheduledFutureTask.nanoTime();
                 if (lastExecutionTime >= deadline) {
